@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dotenv import load_dotenv
 from telethon import TelegramClient, events, functions
+from rapidfuzz import fuzz
 
 # Load environment variables
 load_dotenv()
@@ -33,6 +34,21 @@ userClient = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 # Store user search history
 user_queries = {}
 
+# Function to extract relevant keywords
+def extract_keywords(query):
+    words = query.lower().split()
+    keywords = set()
+    
+    # Add full words
+    keywords.update(words)
+    
+    # Add sub-words (for cases like "money heist" → "money", "heist")
+    for word in words:
+        for i in range(3, len(word) + 1):
+            keywords.add(word[:i])  # Prefixes like "pyt", "pyth", "python"
+
+    return keywords
+
 # Helper function to update progress messages
 async def update_progress(event, message, edit_msg):
     try:
@@ -50,9 +66,21 @@ async def search_groups(query):
         logging.error(f"Error in search_groups: {e}")
         return []
 
+# Function to check if a file or caption matches the keywords (fuzzy matching)
+def is_relevant(text, keywords):
+    if not text:
+        return False
+    text = text.lower()
+    
+    for keyword in keywords:
+        if keyword in text or fuzz.partial_ratio(keyword, text) > 80:  # 80% match
+            return True
+    return False
+
 # Function to search for files in a list of groups
-async def search_in_groups_parallel(keyword, usernames, event, edit_msg):
+async def search_in_groups_parallel(query, usernames, event, edit_msg):
     found_links = []
+    keywords = extract_keywords(query)
     sem = asyncio.Semaphore(5)  # Limit to 5 parallel searches
 
     async def search_single_group(username):
@@ -60,13 +88,13 @@ async def search_in_groups_parallel(keyword, usernames, event, edit_msg):
             links = []
             async for msg in userClient.iter_messages(username, limit=500):
                 if msg.media and (msg.photo or msg.video or msg.document):
-                    caption_match = msg.text and keyword.lower() in msg.text.lower()
+                    caption_match = is_relevant(msg.text, keywords)
                     file_match = (
                         hasattr(msg, "document")
                         and msg.document
                         and msg.file
                         and msg.file.name
-                        and keyword.lower() in msg.file.name.lower()
+                        and is_relevant(msg.file.name, keywords)
                     )
                     if caption_match or file_match:
                         links.append(f"https://t.me/{username}/{msg.id}")
